@@ -1,0 +1,251 @@
+%function FEA
+clear all;
+clc
+tic
+%************************************************************************
+%*                                                                      *
+%*                            C.E. 529B                                 *
+%*                                                                      *
+%*        3D FINITE ELEMENT PROGRAM - Matlab - FEA3D20.m                 *
+%*             30 NODE BRICK ELEMENT                                     *
+%*                                                                      *
+%*     NonLinear Geometry: Total Lagrangian Multidimensional            *
+%*     NonLinear Material: Von Mises 3-D                                *
+%*                                                                      *
+%*     Program Files: FEA3D20.m, FEA3D20_create_input.m, PlotResult.m     *
+%*                                                                      *
+%*     Input Files: node.txt, element.txt (from Abaqus)                 *
+%*     Output File: output.txt                                          *
+%*                                                                      *
+%*     Developed by:                                                    *
+%*          Prof. Wellford                                              *
+%*          Fabian R Rojas  (PhD Student)                               *
+%************************************************************************
+%
+%create input data from Abaqus input file.
+FEA3D20_create_input
+num=2;
+%translate Abaqus input data into FEA input data
+load FEA_input_data.mat coord lotogo jj nNodes nLoadHist nIncr nIte MaxError nGP FlagNLG FlagNLM young poisson youngp akap bet erry ifornod ifordir forval LoadHist;
+
+[njoint,nv]=size(coord);
+[nel]=size(lotogo,1);
+[j,nfor]=size(ifornod);
+jjjj=jj ;
+
+%Compute Eq. Numbers
+[jj,ndf]=eqnum(jj,njoint,nv);
+
+%Compute the column heights
+[nbig,maxa]=colht(lotogo,jj,nel,ndf);
+
+
+ndfp=ndf+1;
+
+%Zero displ. and force vectors
+d=zeros(1,ndf);
+Dd=zeros(1,ndf);
+f=zeros(1,ndf);
+
+% We Initialized the Matrices that will storage the Values to be Record at each increment of Load 
+% Initizalizad the variable that storage the Displacement at the Nodes at each increment of Load
+dRecord=zeros(nIncr*(nLoadHist-1),ndf);  
+% Initizalizad the variable that storage the Force applied at the Nodes at each increment of Load 
+fRecord=zeros(nIncr*(nLoadHist-1),ndf);
+% Initizalizad the variable that storage the 6 stresses at each gauss point for each element at each increment of Load
+tijRecord=zeros(nIncr*(nLoadHist-1),nel,6,(nGP^3));  
+% Initizalizad the variable that storage the 3x3 matrix with stresses at each gauss point for each element at each increment of Load 
+MtijRecord=zeros(nIncr*(nLoadHist-1),nel,(nGP^3),3,3); 
+% Initizalizad the variable that storage the 3x3 stress matrix with the yield surface center at each gauss point for each element at each increment of Load
+MyscRecord=zeros(nIncr*(nLoadHist-1),nel,(nGP^3),3,3); 
+% Initizalizad the variable that storgare the Yield Stress at each gauss point for each element at each increment of Load
+akpRecord=akap*ones(nIncr*(nLoadHist-1),nel,(nGP^3));   
+% Initizalizad the variable that storage the Acumulative or incremental Plastic Stretching at each gauss point for each element at each increment of Load
+epAcumRecord=zeros(nIncr*(nLoadHist-1),nel,(nGP^3)); 
+% Initizalizad the variable that storage the Acumulative or incremental Plastic Stretching in each component at each gauss point for each element at each increment of Load
+MepijAcumRecord=zeros(nIncr*(nLoadHist-1),nel,(nGP^3),3,3); 
+
+% We Initialized the Matrices that will storage the old Values for Nonlinear Material for the material at each element for the increment time analyzed
+% Initizalizad the variable that storage the vector with the 6 stresses at each gauss point at each element for the increment time analyzed
+tijold=zeros(nel,6,(nGP^3));
+% Initizalizad the variable that storage the 3x3 stress matrix at each gauss point at each element for the increment time analyzed
+Mtijold=zeros(nel,(nGP^3),3,3);
+% Initizalizad the variable that storage the 3x3 stress matrix with the yield surface center at each gauss point at each element for the increment time analyzed
+Myscold=zeros(nel,(nGP^3),3,3);
+% Initizalizad the variable that storgare the Yield Stress at each gauss point at each element for the increment time analyzed
+akpold=akap*ones(nel,(nGP^3));
+% Initizalizad the variable that storage the Acumulative or incremental Plastic Stretching at each gauss point at each element for the increment time analyzed
+epAcum=zeros(nel,(nGP^3));
+% Initizalizad the variable that storage the Acumulative or incremental Plastic Stretching in each component at each gauss point at each element for the increment time analyzed
+MepijAcum=zeros(nel,(nGP^3),3,3);
+
+% Auxiliary matrix that storage the values of the element Analyzed
+% Initizalizad the variable that storage the vector with the 6 stresses at each gauss point for the element analyzed
+tijoldel=zeros(6,(nGP^3));
+% Initizalizad the variable that storage the 3x3 stress matrix at each gauss point for the element analyzed
+Mtijoldel=zeros((nGP^3),3,3);
+% Initizalizad the variable that storage the 3x3 stress matrix with the yield surface center at each gauss point for the element analyzed
+Myscoldel=zeros((nGP^3),3,3);
+% Initizalizad the variable that storgare the Yield Stress at each gauss point for the element analyzed
+akpoldel=zeros(1,(nGP^3));
+% Initizalizad the variable that storage the Acumulative or incremental Plastic Stretching at each gauss point for the element analyzed
+epAcumel=zeros(1,(nGP^3));
+% Initizalizad the variable that storage the Acumulative or incremental Plastic Stretching in each component at each gauss point for the element analyzed
+MepijAcumel=zeros((nGP^3),3,3);
+
+%Load concentrated forces in f
+for i=1:nfor
+   inod=ifornod(i);
+   idir=ifordir(i);
+   jj1=jj(inod,idir);
+   if (jj1~=0)
+       f(jj1)=f(jj1)+forval(i);
+   end
+end
+
+x=zeros(nNodes,1);
+y=zeros(nNodes,1);
+z=zeros(nNodes,1);
+
+%Output File is created
+fid = fopen('output.txt','w');
+
+%We call the scrip that Print the Head Values of the Output File
+PrintHeadOutputFile
+
+%Loop on the number of load steps in LoadHistory
+for iLoadHist=1:(nLoadHist-1)
+
+
+    %Loop over the increments to reach the Load Step
+    for iIncr=1:nIncr
+    
+        % We print in screem the Increment Step
+        %strcat('iLoadHist=', int2str(iLoadHist) ,' - iIncr=', int2str(iIncr) )
+    
+        error=1;
+        ite=1; 
+        %Iterate to arrive to equilibrium error in equilibrium
+        while ( abs(error) > MaxError)
+        
+            % We print in screem the Iteration Step
+            strcat('iLoadHist=', int2str(iLoadHist) ,' - iIncr=', int2str(iIncr),' - iIte=', int2str(ite) )
+        
+            %Applied Load to the System
+            fRes=(LoadHist(iLoadHist)+(LoadHist(iLoadHist+1)-LoadHist(iLoadHist))*(iIncr/nIncr))*f;
+            
+             ffRes=fRes;
+%             afRes=fRes(19)
+%             af=f(19)
+            % We initialized with zero the total stiff matrix
+            a=zeros(1,nbig);
+            %Loop on the number of Elements to form the Tangent Stiffness Matrix and Residual 
+            for iel=1:nel
+    
+            
+                % We initialized the vectors that will hold the displacement and the increment of displacement of the element analyzed
+                disp=zeros(nNodes*3,1);
+                Ddisp=zeros(nNodes*3,1);
+                
+                %We copy in the auxilary matrix for one element the values necesary to calculate the Non Linear Material (Von mises theory) at each gauss points for the element analyzed
+                tijoldel(:,:)=tijold(iel,:,:); 
+                Mtijoldel(:,:,:)=Mtijold(iel,:,:,:);
+                Myscoldel(:,:,:)=Myscold(iel,:,:,:);
+                akpoldel(1,:)=akpold(iel,:);
+                epAcumel(1,:)=epAcum(iel,:);
+                MepijAcumel(:,:,:)=MepijAcum(iel,:,:,:);
+                
+                 
+                for iloc=1:nNodes
+                
+                    %Extract the node Coordinates
+                    x(iloc,1)=coord(lotogo(iel,iloc),1);
+                    y(iloc,1)=coord(lotogo(iel,iloc),2);
+                    z(iloc,1)=coord(lotogo(iel,iloc),3);  
+                
+                    %Extract Element node Displacements and the increment Displacement
+                    inod=lotogo(iel,iloc);
+                    for idir=1:3
+                        disp((iloc-1)*3 + idir,1)=0.0;
+                        Ddisp((iloc-1)*3 + idir,1)=0.0;
+                        ieqnm=jj(inod,idir);
+                        if (ieqnm~=0),
+                            disp((iloc-1)*3 + idir,1)=d(ieqnm);
+                            Ddisp((iloc-1)*3 + idir,1)=Dd(ieqnm);
+                        end    
+                    end
+                    
+                end
+  
+            
+                %Compute the Local Tangent Stiffness Matrix and Resistance Force of the Element 
+                [akloc,fel,tijoldel,Mtijoldel,akpoldel,Myscoldel,epAcumel,MepijAcumel]=stiff(x,y,z,nNodes,nGP,FlagNLG,FlagNLM,disp,Ddisp,young,youngp,poisson,tijoldel,Mtijoldel,akpoldel,Myscoldel,epAcumel,MepijAcumel,erry,bet);
+    
+                %Call the scrip that assemble the Tangent Stiffness matrix and the Residual vector
+                AssambleStiffMatrixFRes
+                %We update the Matrices that storage the Values necesary to calculate the Nonlinear Material (Von mises) theory at each gauss point in each element analyzed 
+                tijold(iel,:,:)=tijoldel(:,:);
+                Mtijold(iel,:,:,:)=Mtijoldel(:,:,:);
+                Myscold(iel,:,:,:)=Myscoldel(:,:,:);
+                akpold(iel,:)=akpoldel(1,:);
+                epAcum(iel,:)=epAcumel(1,:);
+                MepijAcum(nel,:,:,:)=MepijAcumel(:,:,:);
+                
+            end;
+
+            %We transfer the Residual Values to the Variable ffR
+            ffR=fRes ;
+
+            %Solve the Equations : {Dd} = [Kt^-1]*{Residual}
+            [ffR,Dd]=colsol2(ndf,a,ffR,maxa);
+        
+            % We update the Total Displacement 
+            d=d+Dd;
+%             ite
+% 
+%             d(19)
+%             Dd(19)
+            %We calculate and Show in screem the error of the Iteration Study:
+            error=sqrt(fRes*fRes');
+            
+            % Increment the counter for the Iterations
+            ite=ite+1;
+        
+            % We check that the number of iteration will have not reach the maximun number of iteration allow for convergence
+            if(ite==nIte)
+                'Too many Attemps'
+                error=0;
+            end   
+        
+        end    
+    
+        %We Record the matrixs with the values obtain at each gauss point in each element for the increment step analyzed
+        tijRecord(nIncr*(iLoadHist-1)+iIncr,:,:,:)=tijold(:,:,:);         
+        MtijRecord(nIncr*(iLoadHist-1)+iIncr,:,:,:,:)=Mtijold(:,:,:,:);
+        MyscRecord(nIncr*(iLoadHist-1)+iIncr,:,:,:,:)=Myscold(:,:,:,:);
+        akpRecord(nIncr*(iLoadHist-1)+iIncr,:,:)=akpold(:,:);
+        epAcumRecord(nIncr*(iLoadHist-1)+iIncr,:,:)=epAcum(:,:);
+        MepijAcumRecord(nIncr*(iLoadHist-1)+iIncr,:,:,:,:)=MepijAcum(:,:,:,:);
+                
+        %We storage the displacement and the force apply at each node for the increment study
+        dRecord(nIncr*(iLoadHist-1)+iIncr,:)=d;
+        fRecord(nIncr*(iLoadHist-1)+iIncr,:)=ffRes;
+   
+        %We call the scrip that Print the Output Values for Each Element in Each Iteration of the Output File
+        PrintValuesOutputFile
+        lp(num)=(LoadHist(iLoadHist)+(LoadHist(iLoadHist+1)-LoadHist(iLoadHist))*(iIncr/nIncr));
+        dp(num)=d(1);
+        num=num+1;
+    end
+
+end
+figure;
+plot(dp,lp);
+xlim([0 2])
+ylim([0 1.5*10^])
+hold on
+% We Close the Output File
+fclose(fid);
+
+save FEA_output_data.mat coord lotogo jj nel nNodes d dRecord fRecord tijRecord MtijRecord MyscRecord akpRecord epAcumRecord MepijAcumRecord;
+toc
